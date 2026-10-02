@@ -1,0 +1,63 @@
+worker_processes auto;
+pid /tmp/nginx.pid;
+error_log /dev/stderr warn;
+
+events { worker_connections 512; }
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    access_log /dev/stdout;
+    sendfile on;
+    client_max_body_size 1m;
+    server_tokens off;
+
+    # Railway terminates HTTPS in front of us and tells us via X-Forwarded-Proto.
+    map $http_x_forwarded_proto $fcgi_https {
+        default "";
+        https   "on";
+    }
+
+    server {
+        listen ${PORT};
+        server_name _;
+        root /app;
+        index index.php;
+
+        # ---- Flask API ----
+        location /api/ {
+            proxy_pass         http://127.0.0.1:5000;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   X-Forwarded-Proto $http_x_forwarded_proto;
+            proxy_read_timeout 30s;
+        }
+
+        # ---- never serve secrets / source ----
+        location ~ /\.                          { deny all; }
+        location ~ ^/(database|deploy|docker|docs|\.github)/ { deny all; }
+        location ~* \.(py|pyc|sql|md|txt|service|example|conf|template|sh|json|yml|yaml)$ { deny all; }
+        location = /Dockerfile                  { deny all; }
+        location = /auth.php                    { deny all; }   # include-only helper
+        location = /dev-router.php              { deny all; }   # local dev helper
+
+        location / { try_files $uri $uri/ =404; }
+
+        location ~ \.php$ {
+            include /etc/nginx/fastcgi_params;
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+            fastcgi_param HTTPS $fcgi_https;
+            fastcgi_pass 127.0.0.1:9000;
+        }
+
+        location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?)$ {
+            expires 7d;
+            access_log off;
+        }
+
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options SAMEORIGIN always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
+    }
+}
